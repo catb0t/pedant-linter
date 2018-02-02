@@ -1,54 +1,82 @@
-USING: accessors continuations eval formatting fry help
-help.lint help.lint.checks help.markup kernel namespaces parser
-prettyprint sequences strings summary vocabs words ;
+USING: accessors arrays classes combinators
+combinators.short-circuit continuations english eval formatting
+fry help help.lint help.lint.checks help.markup kernel
+namespaces parser prettyprint sequences sets sorting splitting
+strings summary vocabs words ;
+FROM: namespaces => set ;
 IN: help.lint.pedantic
 
-ERROR: word-missing-section missing-section word-name ;
-ERROR: empty-examples word-name ;
+ERROR: missing-sections
+    { word-name word initial: POSTPONE: f }
+    { missing-sections sequence initial: { } } ;
+ERROR: empty-examples { word-name initial: POSTPONE: f } ;
 
+<PRIVATE
+DEFER: maybe-pluralize
 
 M: empty-examples summary
     word-name>> "Word '%s' has defined empty $examples section" sprintf ;
 
-M: word-missing-section summary
-    [ word-name>> ] [ missing-section>> ] bi
-    "Word '%s' should define %s help section" sprintf ;
+M: missing-sections summary
+    [ word-name>> ] [
+        missing-sections>> dup [
+            length "section" maybe-pluralize
+        ] dip
+        [ name>> ] map ", " join
+    ] bi
+    "Word '%s' should define help %s: %s" sprintf ;
 
-<PRIVATE
-: elements-by ( element elt-type -- seq )
-  swap elements ;
-PRIVATE>
+: sorted-loaded-child-vocabs ( prefix -- assoc )
+    loaded-child-vocab-names natural-sort ; inline
 
-: check-word-sections ( word -- )
-    [ word-help ] keep '[
-      [ elements-by ] keep swap
-      [ name>> _ word-missing-section throw ]
-      [ 2drop ] if-empty
-    ]
-    { [ \ $description ] [ \ $examples ] [ \ $values ] }
-    [ prepose ] with map
-    [ call( x -- ) ] with each ;
+: filter-private ( seq -- no-private )
+    [ ".private" ?tail nip not ] filter ; inline
+
+: maybe-pluralize ( n word -- word' )
+    count-of-things " " split1 nip ;
+
+: should-define ( word -- spec )
+    {
+        { [ dup predicate? ] [ drop { } ] } ! predicate?s have generated docs
+        { [ dup error? ] [ drop { $values $description $error-description } ] }
+        { [ dup class? ] [ drop { $class-description } ] }
+        { [ dup word? ]  [ drop { $values $description $examples } ] }
+        [ drop no-cond ]
+    } cond ;
+
+: word-defines-sections ( word -- seq )
+    word-help [ first ] map ;
 
 : missing-examples? ( word -- ? )
-    word-help \ $examples elements-by empty? ;
+    word-help \ $examples swap elements empty? ;
 
-: check-word-examples ( word -- )
-    [ missing-examples? ] keep '[ _ empty-examples throw ] when ;
+: check-examples ( word -- )
+    [ missing-examples? ] keep '[ _ empty-examples ] when ;
+
+: check-sections ( word -- )
+    [ ] [ should-define ] [ word-defines-sections ] tri
+    diff [ drop ] [ missing-sections ] if-empty ;
+PRIVATE>
 
 GENERIC: word-pedant ( word -- )
 M: word word-pedant
-    [ check-word-sections ]
-    [ check-word-examples ]
-    bi ; inline
+    {
+        { [ dup predicate? ] [ drop ] }
+        { [ dup error? ] [ check-sections ] }
+        { [ dup word? ] [ [ check-sections ] [ check-examples ] bi ] }
+        [ drop no-cond ]
+    } cond ; inline
 
 M: string word-pedant
     "\\ " prepend eval( -- word ) word-pedant ; inline
 
 : vocab-pedant ( vocab-spec -- )
-    [ auto-use? off vocab-words [ word-pedant ] each ] with-scope ;
+    [ auto-use? off vocab-words natural-sort [ word-pedant ] each ] with-scope ;
 
-: prefix-pedant ( prefix -- )
+: prefix-pedant ( prefix private? -- )
     [
-      auto-use? off group-articles vocab-articles set
-      loaded-child-vocab-names [ vocab-pedant ] each
+        auto-use? off group-articles vocab-articles set
+        [ sorted-loaded-child-vocabs ] dip not
+        [ filter-private ] when
+        [ vocab-pedant ] each
     ] with-scope ;
